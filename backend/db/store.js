@@ -1,7 +1,7 @@
 import pg from 'pg';
 
 const { Pool } = pg;
-const isPostgres = Boolean(process.env.DATABASE_URL);
+let isPostgres = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes('...'));
 
 let pool = null;
 if (isPostgres) {
@@ -12,6 +12,7 @@ if (isPostgres) {
   });
   pool.on('error', (err) => {
     console.error('PostgreSQL unexpected pool error:', err.message);
+    isPostgres = false;
   });
 }
 
@@ -170,7 +171,8 @@ export async function initDb() {
     `);
     console.log('[Store] PostgreSQL schema verified successfully.');
   } catch (err) {
-    console.error('[Store] Error creating PostgreSQL tables:', err.message);
+    console.warn(`[Store] PostgreSQL connection failed (${err.message}). Seamlessly falling back to in-memory store.`);
+    isPostgres = false;
   }
 }
 
@@ -180,13 +182,18 @@ export async function initDb() {
 export async function findUserByEmail(email) {
   const normalized = String(email || '').trim().toLowerCase();
   if (isPostgres) {
-    const res = await pool.query('SELECT * FROM users WHERE email = $1 LIMIT 1', [normalized]);
-    return res.rows[0] ? {
-      id: String(res.rows[0].id),
-      email: res.rows[0].email,
-      password: res.rows[0].password,
-      role: res.rows[0].role,
-    } : null;
+    try {
+      const res = await pool.query('SELECT * FROM users WHERE email = $1 LIMIT 1', [normalized]);
+      return res.rows[0] ? {
+        id: String(res.rows[0].id),
+        email: res.rows[0].email,
+        password: res.rows[0].password,
+        role: res.rows[0].role,
+      } : null;
+    } catch (err) {
+      console.warn('[Store] Postgres error in findUserByEmail, falling back to memory:', err.message);
+      isPostgres = false;
+    }
   }
   return memory.users.get(normalized) || null;
 }
@@ -194,15 +201,20 @@ export async function findUserByEmail(email) {
 export async function createUser({ email, password, role }) {
   const normalized = String(email).trim().toLowerCase();
   if (isPostgres) {
-    const res = await pool.query(
-      'INSERT INTO users (email, password, role) VALUES ($1, $2, $3) RETURNING id, email, role',
-      [normalized, password, role]
-    );
-    return {
-      id: String(res.rows[0].id),
-      email: res.rows[0].email,
-      role: res.rows[0].role,
-    };
+    try {
+      const res = await pool.query(
+        'INSERT INTO users (email, password, role) VALUES ($1, $2, $3) RETURNING id, email, role',
+        [normalized, password, role]
+      );
+      return {
+        id: String(res.rows[0].id),
+        email: res.rows[0].email,
+        role: res.rows[0].role,
+      };
+    } catch (err) {
+      console.warn('[Store] Postgres error in createUser, falling back to memory:', err.message);
+      isPostgres = false;
+    }
   }
   const user = {
     id: String(memory.nextUserId++),
