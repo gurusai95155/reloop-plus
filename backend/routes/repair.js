@@ -1,92 +1,82 @@
 import { Router } from 'express';
+import {
+  getRepairRequests,
+  createRepairRequest,
+  acceptRepairRequest,
+  updateRepairStatus,
+} from '../db/store.js';
 
 const router = Router();
-const requests = [];
-let requestId = 1;
 
-// Seed data so Past History shows repair entries for first user (userId "1")
-function seedRepairData() {
-  if (requests.length > 0) return;
-  const now = new Date().toISOString();
-  requests.push({
-    id: '1',
-    userId: '1',
-    userEmail: 'user@example.com',
-    description: 'Laptop screen repair',
-    category: 'Electronics',
-    condition: 'Broken screen',
-    age: '3 years',
-    aiDecision: 'REPAIR',
-    status: 'COMPLETED',
-    workerId: 'w1',
-    workerEmail: 'worker@example.com',
-    workerNotes: 'Screen replaced successfully',
-    createdAt: now,
-    updatedAt: now,
-  });
-  requestId = 2;
-}
-seedRepairData();
-
-router.get('/requests', (req, res) => {
+router.get('/requests', async (req, res) => {
   const { userId, workerId, status } = req.query;
-  let list = [...requests];
-  if (userId) list = list.filter((r) => r.userId === userId);
-  if (workerId) list = list.filter((r) => r.workerId === workerId);
-  if (status) list = list.filter((r) => r.status === status);
-  res.json(list);
+  try {
+    const list = await getRepairRequests({ userId, workerId, status });
+    res.json(list);
+  } catch (err) {
+    console.error('Error fetching repair requests:', err);
+    res.status(500).json({ error: 'Failed to fetch repair requests' });
+  }
 });
 
-router.get('/requests/available', (req, res) => {
-  res.json(requests.filter((r) => r.status === 'PENDING'));
+router.get('/requests/available', async (req, res) => {
+  try {
+    const list = await getRepairRequests({ status: 'PENDING' });
+    res.json(list);
+  } catch (err) {
+    console.error('Error fetching available repair requests:', err);
+    res.status(500).json({ error: 'Failed to fetch available requests' });
+  }
 });
 
-router.post('/requests', (req, res) => {
+router.post('/requests', async (req, res) => {
   const { userId, userEmail, description, category, condition, age, aiDecision } = req.body || {};
   if (!userId || !description) return res.status(400).json({ error: 'userId and description required' });
-  const req_ = {
-    id: String(requestId++),
-    userId,
-    userEmail: userEmail || '',
-    description: String(description).slice(0, 2000),
-    category: category || null,
-    condition: condition || null,
-    age: age || null,
-    aiDecision: aiDecision || null,
-    status: 'PENDING',
-    workerId: null,
-    workerEmail: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  requests.push(req_);
-  res.status(201).json(req_);
+
+  try {
+    const req_ = await createRepairRequest({
+      userId,
+      userEmail,
+      description,
+      category,
+      condition,
+      age,
+      aiDecision,
+    });
+    res.status(201).json(req_);
+  } catch (err) {
+    console.error('Error creating repair request:', err);
+    res.status(500).json({ error: 'Failed to create repair request' });
+  }
 });
 
-router.post('/requests/:id/accept', (req, res) => {
-  const r = requests.find((x) => x.id === req.params.id);
-  if (!r) return res.status(404).json({ error: 'Request not found' });
-  if (r.status !== 'PENDING') return res.status(400).json({ error: 'Already accepted or completed' });
+router.post('/requests/:id/accept', async (req, res) => {
   const { workerId, workerEmail } = req.body || {};
   if (!workerId) return res.status(400).json({ error: 'workerId required' });
-  r.workerId = workerId;
-  r.workerEmail = workerEmail || '';
-  r.status = 'ACCEPTED';
-  r.updatedAt = new Date().toISOString();
-  res.json(r);
+
+  try {
+    const updated = await acceptRepairRequest(req.params.id, workerId, workerEmail);
+    if (!updated) return res.status(404).json({ error: 'Request not found or already accepted' });
+    res.json(updated);
+  } catch (err) {
+    console.error('Error accepting repair request:', err);
+    res.status(500).json({ error: 'Failed to accept repair request' });
+  }
 });
 
-router.patch('/requests/:id/status', (req, res) => {
-  const r = requests.find((x) => x.id === req.params.id);
-  if (!r) return res.status(404).json({ error: 'Request not found' });
+router.patch('/requests/:id/status', async (req, res) => {
   const { status } = req.body || {};
   const allowed = ['ACCEPTED', 'IN_PROGRESS', 'COMPLETED'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  if (r.status === 'PENDING' && status !== 'ACCEPTED') return res.status(400).json({ error: 'Must accept first' });
-  r.status = status;
-  r.updatedAt = new Date().toISOString();
-  res.json(r);
+
+  try {
+    const updated = await updateRepairStatus(req.params.id, status);
+    if (!updated) return res.status(404).json({ error: 'Request not found' });
+    res.json(updated);
+  } catch (err) {
+    console.error('Error updating repair status:', err);
+    res.status(500).json({ error: 'Failed to update status' });
+  }
 });
 
 export default router;
-export { requests as repairRequests };

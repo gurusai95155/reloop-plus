@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-
-const API = '/api';
+import { API } from '../config.js';
 
 function getStoredUser() {
   const raw = localStorage.getItem('reloop_user');

@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-
-const API = '/api';
+import { API } from '../config.js';
 
 export default function MarketplaceSection({ user, refreshKey, onBidPlaced }) {
   const [marketplaceItems, setMarketplaceItems] = useState([]);

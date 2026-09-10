@@ -7,8 +7,7 @@ import RepairRequest from '../components/RepairRequest';
 import RecycleRequest from '../components/RecycleRequest';
 import MarketplaceSection from '../components/MarketplaceSection';
 import HistorySection from '../components/HistorySection';
-
-const API = '/api';
+import { API } from '../config.js';
 
 function getStoredUser() {
   const raw = localStorage.getItem('reloop_user');

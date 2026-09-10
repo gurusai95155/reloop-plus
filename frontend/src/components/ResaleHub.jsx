@@ -1,6 +1,5 @@
 import { useState } from 'react';
-
-const API = '/api';
+import { API } from '../config.js';
 
 export default function ResaleHub({ user, item, aiResult, onDone }) {
   const [listed, setListed] = useState(null);
