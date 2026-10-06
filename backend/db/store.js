@@ -1,20 +1,7 @@
-import pg from 'pg';
+import mongoose from 'mongoose';
+import { User, ResaleItem, Bid, RepairRequest, RecycleRequest } from './models.js';
 
-const { Pool } = pg;
-let isPostgres = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.includes('...'));
-
-let pool = null;
-if (isPostgres) {
-  const sslOption = process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false };
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: sslOption,
-  });
-  pool.on('error', (err) => {
-    console.error('PostgreSQL unexpected pool error:', err.message);
-    isPostgres = false;
-  });
-}
+let isMongoConnected = false;
 
 // ----------------------------------------------------
 // In-Memory Storage Fallback (zero-config local/dev)
@@ -44,9 +31,9 @@ function seedMemory() {
   // Demo resale items
   memory.items.push(
     { id: '1', userId: '1', userEmail: 'user@example.com', description: 'Vintage wooden chair', category: 'Furniture', condition: 'Good', age: '5 years', aiDecision: 'RESALE', status: 'SOLD', createdAt: now, final_price: 25, buyer_email: 'buyer@example.com' },
-    { id: '2', userId: '2', userEmail: 'seller2@example.com', description: 'Gently used bicycle', category: 'Sports', condition: 'Like new', age: '1 year', aiDecision: 'RESALE', status: 'LISTED', createdAt: now },
-    { id: '3', userId: '3', userEmail: 'seller3@example.com', description: 'Coffee maker', category: 'Electronics', condition: 'Good', age: '2 years', aiDecision: 'RESALE', status: 'LISTED', createdAt: now },
-    { id: '4', userId: '2', userEmail: 'seller2@example.com', description: 'Bookshelf', category: 'Furniture', condition: 'Fair', age: null, aiDecision: 'RESALE', status: 'LISTED', createdAt: now }
+    { id: '2', userId: '2', userEmail: 'worker@example.com', description: 'Gently used bicycle', category: 'Sports', condition: 'Like new', age: '1 year', aiDecision: 'RESALE', status: 'LISTED', createdAt: now },
+    { id: '3', userId: '1', userEmail: 'user@example.com', description: 'Coffee maker', category: 'Electronics', condition: 'Good', age: '2 years', aiDecision: 'RESALE', status: 'LISTED', createdAt: now },
+    { id: '4', userId: '2', userEmail: 'worker@example.com', description: 'Bookshelf', category: 'Furniture', condition: 'Fair', age: '3 years', aiDecision: 'RESALE', status: 'LISTED', createdAt: now }
   );
   memory.nextItemId = 5;
 
@@ -61,7 +48,7 @@ function seedMemory() {
     age: '3 years',
     aiDecision: 'REPAIR',
     status: 'COMPLETED',
-    workerId: 'w1',
+    workerId: '2',
     workerEmail: 'worker@example.com',
     workerNotes: 'Screen replaced successfully',
     createdAt: now,
@@ -81,7 +68,7 @@ function seedMemory() {
     aiDecision: 'RECYCLE',
     choice: 'RESPONSIBLE',
     status: 'COMPLETED',
-    workerId: 'w1',
+    workerId: '2',
     workerEmail: 'worker@example.com',
     recyclingCenter: 'E-Waste Center',
     environmentalImpact: 'Materials recovered',
@@ -92,88 +79,145 @@ function seedMemory() {
 }
 seedMemory();
 
+// Helper to format Mongo docs to match the application interface
+function toJSON(doc) {
+  if (!doc) return null;
+  const obj = doc.toObject ? doc.toObject() : { ...doc };
+  obj.id = String(obj._id || obj.id);
+  delete obj.__v;
+  return obj;
+}
+
+async function findDocById(Model, id) {
+  const idStr = String(id || '');
+  if (!idStr) return null;
+  if (mongoose.isValidObjectId(idStr)) {
+    const doc = await Model.findById(idStr);
+    if (doc) return doc;
+  }
+  return await Model.findOne({ $or: [{ _id: idStr }, { id: idStr }] }).catch(() => null);
+}
+
 // ----------------------------------------------------
-// Database Initialization (PostgreSQL)
+// Database Initialization (MongoDB)
 // ----------------------------------------------------
 export async function initDb() {
-  if (!isPostgres) {
-    console.log('[Store] Running with in-memory store (active).');
+  const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI || (
+    process.env.DATABASE_URL && process.env.DATABASE_URL.startsWith('mongodb') ? process.env.DATABASE_URL : null
+  );
+
+  if (!mongoUri) {
+    console.log('[Store] No MONGODB_URI detected. Running with in-memory storage fallback.');
     return;
   }
-  console.log('[Store] Connecting to PostgreSQL...');
+
+  console.log('[Store] Connecting to MongoDB...');
   try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        role VARCHAR(50) NOT NULL DEFAULT 'USER',
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS resale_items (
-        id SERIAL PRIMARY KEY,
-        user_id VARCHAR(50) NOT NULL,
-        user_email VARCHAR(255),
-        description TEXT NOT NULL,
-        category VARCHAR(100),
-        condition VARCHAR(50),
-        age VARCHAR(50),
-        ai_decision VARCHAR(50),
-        status VARCHAR(50) DEFAULT 'LISTED',
-        final_price NUMERIC,
-        buyer_email VARCHAR(255),
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS bids (
-        id SERIAL PRIMARY KEY,
-        item_id VARCHAR(50) NOT NULL,
-        bidder_id VARCHAR(50) NOT NULL,
-        bidder_email VARCHAR(255),
-        amount NUMERIC NOT NULL,
-        status VARCHAR(50) DEFAULT 'PENDING',
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS repair_requests (
-        id SERIAL PRIMARY KEY,
-        user_id VARCHAR(50) NOT NULL,
-        user_email VARCHAR(255),
-        description TEXT NOT NULL,
-        category VARCHAR(100),
-        condition VARCHAR(50),
-        age VARCHAR(50),
-        ai_decision VARCHAR(50),
-        status VARCHAR(50) DEFAULT 'PENDING',
-        worker_id VARCHAR(50),
-        worker_email VARCHAR(255),
-        worker_notes TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS recycle_requests (
-        id SERIAL PRIMARY KEY,
-        user_id VARCHAR(50) NOT NULL,
-        user_email VARCHAR(255),
-        description TEXT NOT NULL,
-        category VARCHAR(100),
-        condition VARCHAR(50),
-        age VARCHAR(50),
-        ai_decision VARCHAR(50),
-        choice VARCHAR(50) DEFAULT 'RESPONSIBLE',
-        status VARCHAR(50) DEFAULT 'PENDING',
-        worker_id VARCHAR(50),
-        worker_email VARCHAR(255),
-        recycling_center VARCHAR(255),
-        environmental_impact VARCHAR(255),
-        estimated_value NUMERIC,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
-    console.log('[Store] PostgreSQL schema verified successfully.');
+    await mongoose.connect(mongoUri, {
+      serverSelectionTimeoutMS: 5000,
+    });
+    isMongoConnected = true;
+    console.log('[Store] Connected to MongoDB successfully!');
+
+    // Seed demo data into MongoDB if new database
+    await seedMongo();
   } catch (err) {
-    console.warn(`[Store] PostgreSQL connection failed (${err.message}). Seamlessly falling back to in-memory store.`);
-    isPostgres = false;
+    console.warn(`[Store] MongoDB connection failed: ${err.message}. Seamlessly falling back to in-memory store.`);
+    isMongoConnected = false;
   }
+}
+
+async function seedMongo() {
+  try {
+    const count = await User.countDocuments();
+    if (count === 0) {
+      console.log('[Store] Seeding initial demo data to MongoDB...');
+      const user = await User.create({ email: 'user@example.com', password: 'password123', role: 'USER' });
+      const worker = await User.create({ email: 'worker@example.com', password: 'password123', role: 'WORKER' });
+
+      await ResaleItem.create([
+        {
+          userId: user.id,
+          userEmail: user.email,
+          description: 'Vintage wooden chair',
+          category: 'Furniture',
+          condition: 'Good',
+          age: '5 years',
+          aiDecision: 'RESALE',
+          status: 'SOLD',
+          final_price: 25,
+          buyer_email: 'buyer@example.com',
+        },
+        {
+          userId: worker.id,
+          userEmail: worker.email,
+          description: 'Gently used bicycle',
+          category: 'Sports',
+          condition: 'Like new',
+          age: '1 year',
+          aiDecision: 'RESALE',
+          status: 'LISTED',
+        },
+        {
+          userId: user.id,
+          userEmail: user.email,
+          description: 'Coffee maker',
+          category: 'Electronics',
+          condition: 'Good',
+          age: '2 years',
+          aiDecision: 'RESALE',
+          status: 'LISTED',
+        },
+        {
+          userId: worker.id,
+          userEmail: worker.email,
+          description: 'Bookshelf',
+          category: 'Furniture',
+          condition: 'Fair',
+          age: '3 years',
+          aiDecision: 'RESALE',
+          status: 'LISTED',
+        },
+      ]);
+
+      await RepairRequest.create({
+        userId: user.id,
+        userEmail: user.email,
+        description: 'Laptop screen repair',
+        category: 'Electronics',
+        condition: 'Broken screen',
+        age: '3 years',
+        aiDecision: 'REPAIR',
+        status: 'COMPLETED',
+        workerId: worker.id,
+        workerEmail: worker.email,
+        workerNotes: 'Screen replaced successfully',
+      });
+
+      await RecycleRequest.create({
+        userId: user.id,
+        userEmail: user.email,
+        description: 'Old printer',
+        category: 'Electronics',
+        condition: 'Non-working',
+        age: '8 years',
+        aiDecision: 'RECYCLE',
+        choice: 'RESPONSIBLE',
+        status: 'COMPLETED',
+        workerId: worker.id,
+        workerEmail: worker.email,
+        recyclingCenter: 'E-Waste Center',
+        environmentalImpact: 'Materials recovered',
+      });
+      console.log('[Store] Seeded demo users and marketplace items into MongoDB.');
+    }
+  } catch (seedErr) {
+    console.warn('[Store] Mongo seeding warning:', seedErr.message);
+  }
+}
+
+export function isDbConnected() {
+  return isMongoConnected;
 }
 
 // ----------------------------------------------------
@@ -181,18 +225,12 @@ export async function initDb() {
 // ----------------------------------------------------
 export async function findUserByEmail(email) {
   const normalized = String(email || '').trim().toLowerCase();
-  if (isPostgres) {
+  if (isMongoConnected) {
     try {
-      const res = await pool.query('SELECT * FROM users WHERE email = $1 LIMIT 1', [normalized]);
-      return res.rows[0] ? {
-        id: String(res.rows[0].id),
-        email: res.rows[0].email,
-        password: res.rows[0].password,
-        role: res.rows[0].role,
-      } : null;
+      const user = await User.findOne({ email: normalized });
+      return user ? toJSON(user) : null;
     } catch (err) {
-      console.warn('[Store] Postgres error in findUserByEmail, falling back to memory:', err.message);
-      isPostgres = false;
+      console.warn('[Store] MongoDB findUserByEmail error:', err.message);
     }
   }
   return memory.users.get(normalized) || null;
@@ -200,20 +238,12 @@ export async function findUserByEmail(email) {
 
 export async function createUser({ email, password, role }) {
   const normalized = String(email).trim().toLowerCase();
-  if (isPostgres) {
+  if (isMongoConnected) {
     try {
-      const res = await pool.query(
-        'INSERT INTO users (email, password, role) VALUES ($1, $2, $3) RETURNING id, email, role',
-        [normalized, password, role]
-      );
-      return {
-        id: String(res.rows[0].id),
-        email: res.rows[0].email,
-        role: res.rows[0].role,
-      };
+      const doc = await User.create({ email: normalized, password: String(password), role });
+      return toJSON(doc);
     } catch (err) {
-      console.warn('[Store] Postgres error in createUser, falling back to memory:', err.message);
-      isPostgres = false;
+      console.warn('[Store] MongoDB createUser error:', err.message);
     }
   }
   const user = {
@@ -230,36 +260,30 @@ export async function createUser({ email, password, role }) {
 // Unified Store Methods: Resale & Bids
 // ----------------------------------------------------
 export async function getListedResaleItems() {
-  if (isPostgres) {
-    const res = await pool.query(
-      `SELECT id, user_id as "userId", user_email as "userEmail", description, category,
-              condition, age, ai_decision as "aiDecision", status, final_price, buyer_email, created_at as "createdAt"
-       FROM resale_items WHERE status = 'LISTED' ORDER BY created_at DESC`
-    );
-    return res.rows.map((r) => ({ ...r, id: String(r.id), userId: String(r.userId) }));
+  if (isMongoConnected) {
+    try {
+      const docs = await ResaleItem.find({ status: 'LISTED' }).sort({ createdAt: -1 });
+      return docs.map(toJSON);
+    } catch (err) {
+      console.warn('[Store] MongoDB getListedResaleItems error:', err.message);
+    }
   }
   return memory.items.filter((i) => i.status === 'LISTED');
 }
 
 export async function getResaleItemById(id) {
   const itemIdStr = String(id);
-  if (isPostgres) {
-    const itemRes = await pool.query(
-      `SELECT id, user_id as "userId", user_email as "userEmail", description, category,
-              condition, age, ai_decision as "aiDecision", status, final_price, buyer_email, created_at as "createdAt"
-       FROM resale_items WHERE id = $1 LIMIT 1`,
-      [Number(id)]
-    );
-    if (!itemRes.rows[0]) return null;
-    const item = { ...itemRes.rows[0], id: String(itemRes.rows[0].id), userId: String(itemRes.rows[0].userId) };
-    const bidsRes = await pool.query(
-      `SELECT id, item_id as "itemId", bidder_id as "bidderId", bidder_email as "bidderEmail",
-              amount, status, created_at as "createdAt"
-       FROM bids WHERE item_id = $1 ORDER BY created_at ASC`,
-      [itemIdStr]
-    );
-    item.bids = bidsRes.rows.map((b) => ({ ...b, id: String(b.id), amount: Number(b.amount) }));
-    return item;
+  if (isMongoConnected) {
+    try {
+      const itemDoc = await findDocById(ResaleItem, itemIdStr);
+      if (!itemDoc) return null;
+      const item = toJSON(itemDoc);
+      const bids = await Bid.find({ itemId: item.id }).sort({ createdAt: 1 });
+      item.bids = bids.map((b) => ({ ...toJSON(b), amount: Number(b.amount) }));
+      return item;
+    } catch (err) {
+      console.warn('[Store] MongoDB getResaleItemById error:', err.message);
+    }
   }
 
   const item = memory.items.find((i) => String(i.id) === itemIdStr);
@@ -269,15 +293,22 @@ export async function getResaleItemById(id) {
 }
 
 export async function createResaleItem({ userId, userEmail, description, category, condition, age, aiDecision }) {
-  if (isPostgres) {
-    const res = await pool.query(
-      `INSERT INTO resale_items (user_id, user_email, description, category, condition, age, ai_decision, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'LISTED')
-       RETURNING id, user_id as "userId", user_email as "userEmail", description, category,
-                 condition, age, ai_decision as "aiDecision", status, created_at as "createdAt"`,
-      [String(userId), userEmail || '', description, category || null, condition || null, age || null, aiDecision || null]
-    );
-    return { ...res.rows[0], id: String(res.rows[0].id) };
+  if (isMongoConnected) {
+    try {
+      const doc = await ResaleItem.create({
+        userId: String(userId),
+        userEmail: userEmail || '',
+        description: String(description).slice(0, 2000),
+        category: category || null,
+        condition: condition || null,
+        age: age || null,
+        aiDecision: aiDecision || null,
+        status: 'LISTED',
+      });
+      return toJSON(doc);
+    } catch (err) {
+      console.warn('[Store] MongoDB createResaleItem error:', err.message);
+    }
   }
 
   const item = {
@@ -298,14 +329,19 @@ export async function createResaleItem({ userId, userEmail, description, categor
 
 export async function addBid({ itemId, bidderId, bidderEmail, amount }) {
   const itemIdStr = String(itemId);
-  if (isPostgres) {
-    const res = await pool.query(
-      `INSERT INTO bids (item_id, bidder_id, bidder_email, amount, status)
-       VALUES ($1, $2, $3, $4, 'PENDING')
-       RETURNING id, item_id as "itemId", bidder_id as "bidderId", bidder_email as "bidderEmail", amount, status, created_at as "createdAt"`,
-      [itemIdStr, String(bidderId), bidderEmail || '', Number(amount) || 0]
-    );
-    return { ...res.rows[0], id: String(res.rows[0].id), amount: Number(res.rows[0].amount) };
+  if (isMongoConnected) {
+    try {
+      const doc = await Bid.create({
+        itemId: itemIdStr,
+        bidderId: String(bidderId),
+        bidderEmail: bidderEmail || '',
+        amount: Number(amount) || 0,
+        status: 'PENDING',
+      });
+      return { ...toJSON(doc), amount: Number(doc.amount) };
+    } catch (err) {
+      console.warn('[Store] MongoDB addBid error:', err.message);
+    }
   }
 
   const bid = {
@@ -325,24 +361,36 @@ export async function acceptBid({ itemId, bidId, ownerUserId }) {
   const itemIdStr = String(itemId);
   const bidIdStr = String(bidId);
 
-  if (isPostgres) {
-    const item = await getResaleItemById(itemIdStr);
-    if (!item) return { error: 'Item not found', status: 404 };
-    if (String(item.userId) !== String(ownerUserId)) return { error: 'Only owner can accept', status: 403 };
-    const bid = item.bids?.find((b) => String(b.id) === bidIdStr);
-    if (!bid) return { error: 'Bid not found', status: 404 };
-    if (bid.status !== 'PENDING') return { error: 'Bid already resolved', status: 400 };
+  if (isMongoConnected) {
+    try {
+      const item = await getResaleItemById(itemIdStr);
+      if (!item) return { error: 'Item not found', status: 404 };
+      if (String(item.userId) !== String(ownerUserId)) return { error: 'Only owner can accept', status: 403 };
 
-    await pool.query("UPDATE bids SET status = 'ACCEPTED' WHERE id = $1", [Number(bidId)]);
-    await pool.query("UPDATE bids SET status = 'REJECTED' WHERE item_id = $1 AND id != $2", [itemIdStr, Number(bidId)]);
-    await pool.query("UPDATE resale_items SET status = 'SOLD', final_price = $1, buyer_email = $2 WHERE id = $3", [
-      bid.amount,
-      bid.bidderEmail || '',
-      Number(itemId),
-    ]);
+      const bidDoc = await findDocById(Bid, bidIdStr);
+      if (!bidDoc) return { error: 'Bid not found', status: 404 };
+      if (bidDoc.status !== 'PENDING') return { error: 'Bid already resolved', status: 400 };
 
-    const updated = await getResaleItemById(itemIdStr);
-    return { item: updated, bid: { ...bid, status: 'ACCEPTED' } };
+      bidDoc.status = 'ACCEPTED';
+      await bidDoc.save();
+
+      // Reject other bids for this item
+      await Bid.updateMany(
+        { itemId: item.id, _id: { $ne: bidDoc._id } },
+        { status: 'REJECTED' }
+      );
+
+      // Mark item as SOLD
+      await ResaleItem.updateOne(
+        { _id: item._id || item.id },
+        { status: 'SOLD', final_price: bidDoc.amount, buyer_email: bidDoc.bidderEmail || '' }
+      );
+
+      const updated = await getResaleItemById(itemIdStr);
+      return { item: updated, bid: { ...toJSON(bidDoc), status: 'ACCEPTED' } };
+    } catch (err) {
+      console.warn('[Store] MongoDB acceptBid error:', err.message);
+    }
   }
 
   const item = memory.items.find((i) => String(i.id) === itemIdStr);
@@ -363,16 +411,21 @@ export async function rejectBid({ itemId, bidId, ownerUserId }) {
   const itemIdStr = String(itemId);
   const bidIdStr = String(bidId);
 
-  if (isPostgres) {
-    const item = await getResaleItemById(itemIdStr);
-    if (!item) return { error: 'Item not found', status: 404 };
-    if (String(item.userId) !== String(ownerUserId)) return { error: 'Only owner can reject', status: 403 };
-    const res = await pool.query(
-      "UPDATE bids SET status = 'REJECTED' WHERE id = $1 AND item_id = $2 RETURNING id, item_id as \"itemId\", status",
-      [Number(bidId), itemIdStr]
-    );
-    if (!res.rows[0]) return { error: 'Bid not found', status: 404 };
-    return { bid: { ...res.rows[0], id: String(res.rows[0].id) } };
+  if (isMongoConnected) {
+    try {
+      const item = await getResaleItemById(itemIdStr);
+      if (!item) return { error: 'Item not found', status: 404 };
+      if (String(item.userId) !== String(ownerUserId)) return { error: 'Only owner can reject', status: 403 };
+
+      const bidDoc = await findDocById(Bid, bidIdStr);
+      if (!bidDoc) return { error: 'Bid not found', status: 404 };
+
+      bidDoc.status = 'REJECTED';
+      await bidDoc.save();
+      return { bid: toJSON(bidDoc) };
+    } catch (err) {
+      console.warn('[Store] MongoDB rejectBid error:', err.message);
+    }
   }
 
   const item = memory.items.find((i) => String(i.id) === itemIdStr);
@@ -385,29 +438,22 @@ export async function rejectBid({ itemId, bidId, ownerUserId }) {
 
 export async function getSellerItemsWithBids(userId) {
   const uid = String(userId);
-  if (isPostgres) {
-    const itemsRes = await pool.query(
-      `SELECT id, user_id as "userId", user_email as "userEmail", description, category,
-              condition, age, ai_decision as "aiDecision", status, final_price, buyer_email, created_at as "createdAt"
-       FROM resale_items WHERE user_id = $1 ORDER BY created_at DESC`,
-      [uid]
-    );
-    const result = [];
-    for (const row of itemsRes.rows) {
-      const bidsRes = await pool.query(
-        `SELECT id, item_id as "itemId", bidder_id as "bidderId", bidder_email as "bidderEmail",
-                amount, status, created_at as "createdAt"
-         FROM bids WHERE item_id = $1 ORDER BY amount DESC`,
-        [String(row.id)]
-      );
-      result.push({
-        ...row,
-        id: String(row.id),
-        userId: String(row.userId),
-        bids: bidsRes.rows.map((b) => ({ ...b, id: String(b.id), amount: Number(b.amount) })),
-      });
+  if (isMongoConnected) {
+    try {
+      const items = await ResaleItem.find({ userId: uid }).sort({ createdAt: -1 });
+      const result = [];
+      for (const rawItem of items) {
+        const item = toJSON(rawItem);
+        const bids = await Bid.find({ itemId: item.id }).sort({ amount: -1 });
+        result.push({
+          ...item,
+          bids: bids.map((b) => ({ ...toJSON(b), amount: Number(b.amount) })),
+        });
+      }
+      return result;
+    } catch (err) {
+      console.warn('[Store] MongoDB getSellerItemsWithBids error:', err.message);
     }
-    return result;
   }
 
   const userItems = memory.items.filter((i) => String(i.userId) === uid);
@@ -419,34 +465,27 @@ export async function getSellerItemsWithBids(userId) {
 
 export async function getMarketplaceItems(excludeUserId) {
   const excludeIdStr = excludeUserId != null ? String(excludeUserId) : null;
-  if (isPostgres) {
-    let query = `SELECT id, user_id as "userId", user_email as "userEmail", description, category,
-                        condition, age, ai_decision as "aiDecision", status, final_price, buyer_email, created_at as "createdAt"
-                 FROM resale_items WHERE status = 'LISTED'`;
-    const params = [];
-    if (excludeIdStr) {
-      params.push(excludeIdStr);
-      query += ` AND user_id != $1`;
+  if (isMongoConnected) {
+    try {
+      const query = { status: 'LISTED' };
+      if (excludeIdStr) {
+        query.userId = { $ne: excludeIdStr };
+      }
+      const items = await ResaleItem.find(query).sort({ createdAt: -1 });
+      const result = [];
+      for (const rawItem of items) {
+        const item = toJSON(rawItem);
+        const bids = await Bid.find({ itemId: item.id }).sort({ amount: -1 });
+        result.push({
+          ...item,
+          owner_email: item.userEmail,
+          bids: bids.map((b) => ({ ...toJSON(b), amount: Number(b.amount), bidder_email: b.bidderEmail })),
+        });
+      }
+      return result;
+    } catch (err) {
+      console.warn('[Store] MongoDB getMarketplaceItems error:', err.message);
     }
-    query += ' ORDER BY created_at DESC';
-    const res = await pool.query(query, params);
-    const result = [];
-    for (const row of res.rows) {
-      const bidsRes = await pool.query(
-        `SELECT id, item_id as "itemId", bidder_id as "bidderId", bidder_email as "bidderEmail",
-                amount, status, created_at as "createdAt"
-         FROM bids WHERE item_id = $1 ORDER BY amount DESC`,
-        [String(row.id)]
-      );
-      result.push({
-        ...row,
-        id: String(row.id),
-        userId: String(row.userId),
-        owner_email: row.userEmail,
-        bids: bidsRes.rows.map((b) => ({ ...b, id: String(b.id), amount: Number(b.amount), bidder_email: b.bidderEmail })),
-      });
-    }
-    return result;
   }
 
   const items = memory.items.filter(
@@ -463,25 +502,25 @@ export async function getMarketplaceItems(excludeUserId) {
 
 export async function getMyBidsWithItemDetails(bidderId) {
   const bidIdStr = String(bidderId);
-  if (isPostgres) {
-    const res = await pool.query(
-      `SELECT b.id, b.item_id as "itemId", b.bidder_id as "bidderId", b.bidder_email as "bidderEmail",
-              b.amount, b.status, b.created_at as "createdAt",
-              i.description as item_description, i.user_email as seller_email
-       FROM bids b
-       LEFT JOIN resale_items i ON b.item_id = CAST(i.id AS VARCHAR)
-       WHERE b.bidder_id = $1
-       ORDER BY b.created_at DESC`,
-      [bidIdStr]
-    );
-    return res.rows.map((r) => ({
-      ...r,
-      id: String(r.id),
-      amount: Number(r.amount),
-      bidder_email: r.bidderEmail,
-      item_description: r.item_description || 'Unknown item',
-      seller_email: r.seller_email || 'Unknown seller',
-    }));
+  if (isMongoConnected) {
+    try {
+      const bids = await Bid.find({ bidderId: bidIdStr }).sort({ createdAt: -1 });
+      const result = [];
+      for (const rawBid of bids) {
+        const b = toJSON(rawBid);
+        const item = await findDocById(ResaleItem, b.itemId);
+        result.push({
+          ...b,
+          amount: Number(b.amount),
+          bidder_email: b.bidderEmail,
+          item_description: item ? item.description : 'Unknown item',
+          seller_email: item ? item.userEmail : 'Unknown seller',
+        });
+      }
+      return result;
+    } catch (err) {
+      console.warn('[Store] MongoDB getMyBidsWithItemDetails error:', err.message);
+    }
   }
 
   const userBids = memory.bids.filter((b) => String(b.bidderId) === bidIdStr);
@@ -496,33 +535,21 @@ export async function getMyBidsWithItemDetails(bidderId) {
   });
 }
 
-
 // ----------------------------------------------------
 // Unified Store Methods: Repair Requests
 // ----------------------------------------------------
 export async function getRepairRequests({ userId, workerId, status } = {}) {
-  if (isPostgres) {
-    let query = `SELECT id, user_id as "userId", user_email as "userEmail", description, category,
-                        condition, age, ai_decision as "aiDecision", status, worker_id as "workerId",
-                        worker_email as "workerEmail", worker_notes as "workerNotes",
-                        created_at as "createdAt", updated_at as "updatedAt"
-                 FROM repair_requests WHERE 1=1`;
-    const params = [];
-    if (userId) {
-      params.push(String(userId));
-      query += ` AND user_id = $${params.length}`;
+  if (isMongoConnected) {
+    try {
+      const filter = {};
+      if (userId) filter.userId = String(userId);
+      if (workerId) filter.workerId = String(workerId);
+      if (status) filter.status = status;
+      const docs = await RepairRequest.find(filter).sort({ createdAt: -1 });
+      return docs.map(toJSON);
+    } catch (err) {
+      console.warn('[Store] MongoDB getRepairRequests error:', err.message);
     }
-    if (workerId) {
-      params.push(String(workerId));
-      query += ` AND worker_id = $${params.length}`;
-    }
-    if (status) {
-      params.push(status);
-      query += ` AND status = $${params.length}`;
-    }
-    query += ' ORDER BY created_at DESC';
-    const res = await pool.query(query, params);
-    return res.rows.map((r) => ({ ...r, id: String(r.id) }));
   }
 
   let list = [...memory.repairRequests];
@@ -534,15 +561,24 @@ export async function getRepairRequests({ userId, workerId, status } = {}) {
 
 export async function createRepairRequest(data) {
   const now = new Date().toISOString();
-  if (isPostgres) {
-    const res = await pool.query(
-      `INSERT INTO repair_requests (user_id, user_email, description, category, condition, age, ai_decision, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING')
-       RETURNING id, user_id as "userId", user_email as "userEmail", description, category,
-                 condition, age, ai_decision as "aiDecision", status, created_at as "createdAt", updated_at as "updatedAt"`,
-      [String(data.userId), data.userEmail || '', data.description, data.category || null, data.condition || null, data.age || null, data.aiDecision || null]
-    );
-    return { ...res.rows[0], id: String(res.rows[0].id) };
+  if (isMongoConnected) {
+    try {
+      const doc = await RepairRequest.create({
+        userId: String(data.userId),
+        userEmail: data.userEmail || '',
+        description: String(data.description).slice(0, 2000),
+        category: data.category || null,
+        condition: data.condition || null,
+        age: data.age || null,
+        aiDecision: data.aiDecision || null,
+        status: 'PENDING',
+        workerId: null,
+        workerEmail: null,
+      });
+      return toJSON(doc);
+    } catch (err) {
+      console.warn('[Store] MongoDB createRepairRequest error:', err.message);
+    }
   }
 
   const req_ = {
@@ -567,17 +603,20 @@ export async function createRepairRequest(data) {
 export async function acceptRepairRequest(id, workerId, workerEmail) {
   const idStr = String(id);
   const now = new Date().toISOString();
-  if (isPostgres) {
-    const res = await pool.query(
-      `UPDATE repair_requests
-       SET status = 'ACCEPTED', worker_id = $1, worker_email = $2, updated_at = NOW()
-       WHERE id = $3 AND status = 'PENDING'
-       RETURNING id, user_id as "userId", user_email as "userEmail", description, category,
-                 condition, age, ai_decision as "aiDecision", status, worker_id as "workerId",
-                 worker_email as "workerEmail", updated_at as "updatedAt"`,
-      [String(workerId), workerEmail || '', Number(id)]
-    );
-    return res.rows[0] ? { ...res.rows[0], id: String(res.rows[0].id) } : null;
+
+  if (isMongoConnected) {
+    try {
+      const reqDoc = await findDocById(RepairRequest, idStr);
+      if (!reqDoc || reqDoc.status !== 'PENDING') return null;
+      reqDoc.status = 'ACCEPTED';
+      reqDoc.workerId = String(workerId);
+      reqDoc.workerEmail = workerEmail || '';
+      reqDoc.updatedAt = new Date();
+      await reqDoc.save();
+      return toJSON(reqDoc);
+    } catch (err) {
+      console.warn('[Store] MongoDB acceptRepairRequest error:', err.message);
+    }
   }
 
   const r = memory.repairRequests.find((x) => String(x.id) === idStr);
@@ -592,15 +631,18 @@ export async function acceptRepairRequest(id, workerId, workerEmail) {
 export async function updateRepairStatus(id, status) {
   const idStr = String(id);
   const now = new Date().toISOString();
-  if (isPostgres) {
-    const res = await pool.query(
-      `UPDATE repair_requests SET status = $1, updated_at = NOW() WHERE id = $2
-       RETURNING id, user_id as "userId", user_email as "userEmail", description, category,
-                 condition, age, ai_decision as "aiDecision", status, worker_id as "workerId",
-                 worker_email as "workerEmail", updated_at as "updatedAt"`,
-      [status, Number(id)]
-    );
-    return res.rows[0] ? { ...res.rows[0], id: String(res.rows[0].id) } : null;
+
+  if (isMongoConnected) {
+    try {
+      const reqDoc = await findDocById(RepairRequest, idStr);
+      if (!reqDoc) return null;
+      reqDoc.status = status;
+      reqDoc.updatedAt = new Date();
+      await reqDoc.save();
+      return toJSON(reqDoc);
+    } catch (err) {
+      console.warn('[Store] MongoDB updateRepairStatus error:', err.message);
+    }
   }
 
   const r = memory.repairRequests.find((x) => String(x.id) === idStr);
@@ -614,29 +656,17 @@ export async function updateRepairStatus(id, status) {
 // Unified Store Methods: Recycle Requests
 // ----------------------------------------------------
 export async function getRecycleRequests({ userId, workerId, status } = {}) {
-  if (isPostgres) {
-    let query = `SELECT id, user_id as "userId", user_email as "userEmail", description, category,
-                        condition, age, ai_decision as "aiDecision", choice, status, worker_id as "workerId",
-                        worker_email as "workerEmail", recycling_center as "recyclingCenter",
-                        environmental_impact as "environmentalImpact", estimated_value as "estimatedValue",
-                        created_at as "createdAt", updated_at as "updatedAt"
-                 FROM recycle_requests WHERE 1=1`;
-    const params = [];
-    if (userId) {
-      params.push(String(userId));
-      query += ` AND user_id = $${params.length}`;
+  if (isMongoConnected) {
+    try {
+      const filter = {};
+      if (userId) filter.userId = String(userId);
+      if (workerId) filter.workerId = String(workerId);
+      if (status) filter.status = status;
+      const docs = await RecycleRequest.find(filter).sort({ createdAt: -1 });
+      return docs.map(toJSON);
+    } catch (err) {
+      console.warn('[Store] MongoDB getRecycleRequests error:', err.message);
     }
-    if (workerId) {
-      params.push(String(workerId));
-      query += ` AND worker_id = $${params.length}`;
-    }
-    if (status) {
-      params.push(status);
-      query += ` AND status = $${params.length}`;
-    }
-    query += ' ORDER BY created_at DESC';
-    const res = await pool.query(query, params);
-    return res.rows.map((r) => ({ ...r, id: String(r.id), estimatedValue: r.estimatedValue ? Number(r.estimatedValue) : null }));
   }
 
   let list = [...memory.recycleRequests];
@@ -651,16 +681,26 @@ export async function createRecycleRequest(data) {
   const choice = data.choice === 'VALUE' ? 'VALUE' : 'RESPONSIBLE';
   const estimatedValue = choice === 'VALUE' ? Math.round(5 + Math.random() * 45) : null;
 
-  if (isPostgres) {
-    const res = await pool.query(
-      `INSERT INTO recycle_requests (user_id, user_email, description, category, condition, age, ai_decision, choice, estimated_value, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PENDING')
-       RETURNING id, user_id as "userId", user_email as "userEmail", description, category,
-                 condition, age, ai_decision as "aiDecision", choice, estimated_value as "estimatedValue",
-                 status, created_at as "createdAt", updated_at as "updatedAt"`,
-      [String(data.userId), data.userEmail || '', data.description, data.category || null, data.condition || null, data.age || null, data.aiDecision || null, choice, estimatedValue]
-    );
-    return { ...res.rows[0], id: String(res.rows[0].id), estimatedValue: res.rows[0].estimatedValue ? Number(res.rows[0].estimatedValue) : null };
+  if (isMongoConnected) {
+    try {
+      const doc = await RecycleRequest.create({
+        userId: String(data.userId),
+        userEmail: data.userEmail || '',
+        description: String(data.description).slice(0, 2000),
+        category: data.category || null,
+        condition: data.condition || null,
+        age: data.age || null,
+        aiDecision: data.aiDecision || null,
+        choice,
+        estimatedValue,
+        status: 'PENDING',
+        workerId: null,
+        workerEmail: null,
+      });
+      return toJSON(doc);
+    } catch (err) {
+      console.warn('[Store] MongoDB createRecycleRequest error:', err.message);
+    }
   }
 
   const req_ = {
@@ -687,17 +727,20 @@ export async function createRecycleRequest(data) {
 export async function acceptRecycleRequest(id, workerId, workerEmail) {
   const idStr = String(id);
   const now = new Date().toISOString();
-  if (isPostgres) {
-    const res = await pool.query(
-      `UPDATE recycle_requests
-       SET status = 'ACCEPTED', worker_id = $1, worker_email = $2, updated_at = NOW()
-       WHERE id = $3 AND status = 'PENDING'
-       RETURNING id, user_id as "userId", user_email as "userEmail", description, category,
-                 condition, age, ai_decision as "aiDecision", status, worker_id as "workerId",
-                 worker_email as "workerEmail", updated_at as "updatedAt"`,
-      [String(workerId), workerEmail || '', Number(id)]
-    );
-    return res.rows[0] ? { ...res.rows[0], id: String(res.rows[0].id) } : null;
+
+  if (isMongoConnected) {
+    try {
+      const reqDoc = await findDocById(RecycleRequest, idStr);
+      if (!reqDoc || reqDoc.status !== 'PENDING') return null;
+      reqDoc.status = 'ACCEPTED';
+      reqDoc.workerId = String(workerId);
+      reqDoc.workerEmail = workerEmail || '';
+      reqDoc.updatedAt = new Date();
+      await reqDoc.save();
+      return toJSON(reqDoc);
+    } catch (err) {
+      console.warn('[Store] MongoDB acceptRecycleRequest error:', err.message);
+    }
   }
 
   const r = memory.recycleRequests.find((x) => String(x.id) === idStr);
@@ -712,15 +755,18 @@ export async function acceptRecycleRequest(id, workerId, workerEmail) {
 export async function updateRecycleStatus(id, status) {
   const idStr = String(id);
   const now = new Date().toISOString();
-  if (isPostgres) {
-    const res = await pool.query(
-      `UPDATE recycle_requests SET status = $1, updated_at = NOW() WHERE id = $2
-       RETURNING id, user_id as "userId", user_email as "userEmail", description, category,
-                 condition, age, ai_decision as "aiDecision", status, worker_id as "workerId",
-                 worker_email as "workerEmail", updated_at as "updatedAt"`,
-      [status, Number(id)]
-    );
-    return res.rows[0] ? { ...res.rows[0], id: String(res.rows[0].id) } : null;
+
+  if (isMongoConnected) {
+    try {
+      const reqDoc = await findDocById(RecycleRequest, idStr);
+      if (!reqDoc) return null;
+      reqDoc.status = status;
+      reqDoc.updatedAt = new Date();
+      await reqDoc.save();
+      return toJSON(reqDoc);
+    } catch (err) {
+      console.warn('[Store] MongoDB updateRecycleStatus error:', err.message);
+    }
   }
 
   const r = memory.recycleRequests.find((x) => String(x.id) === idStr);
@@ -737,32 +783,80 @@ export async function getUserHistory(userId) {
   const uid = String(userId);
   const history = [];
 
-  if (isPostgres) {
-    const soldRes = await pool.query(
-      `SELECT id, description, category, condition, status, final_price, buyer_email, created_at
-       FROM resale_items WHERE user_id = $1 AND status = 'SOLD'`,
-      [uid]
-    );
-    soldRes.rows.forEach((r) => {
+  if (isMongoConnected) {
+    try {
+      const soldItems = await ResaleItem.find({ userId: uid, status: 'SOLD' });
+      soldItems.forEach((r) => {
+        history.push({
+          id: `resale-${r._id}`,
+          type: 'RESALE',
+          description: r.description,
+          category: r.category,
+          condition: r.condition,
+          status: r.status,
+          final_price: r.final_price ? Number(r.final_price) : null,
+          buyer_email: r.buyer_email,
+          created_at: r.createdAt,
+        });
+      });
+
+      const repairReqs = await RepairRequest.find({ userId: uid });
+      repairReqs.forEach((r) => {
+        history.push({
+          id: `repair-${r._id}`,
+          type: 'REPAIR',
+          description: r.description,
+          category: r.category,
+          condition: r.condition,
+          status: r.status,
+          worker_notes: r.workerNotes,
+          estimated_completion: r.updatedAt,
+          created_at: r.createdAt,
+        });
+      });
+
+      const recycleReqs = await RecycleRequest.find({ userId: uid });
+      recycleReqs.forEach((r) => {
+        history.push({
+          id: `recycle-${r._id}`,
+          type: 'RECYCLE',
+          description: r.description,
+          category: r.category,
+          condition: r.condition,
+          status: r.status,
+          recycling_center: r.recyclingCenter,
+          environmental_impact: r.environmentalImpact,
+          created_at: r.createdAt,
+        });
+      });
+
+      history.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      return history;
+    } catch (err) {
+      console.warn('[Store] MongoDB getUserHistory error:', err.message);
+    }
+  }
+
+  // In-memory history aggregation
+  memory.items
+    .filter((i) => String(i.userId) === uid && i.status === 'SOLD')
+    .forEach((i) => {
       history.push({
-        id: `resale-${r.id}`,
+        id: `resale-${i.id}`,
         type: 'RESALE',
-        description: r.description,
-        category: r.category,
-        condition: r.condition,
-        status: r.status,
-        final_price: r.final_price ? Number(r.final_price) : null,
-        buyer_email: r.buyer_email,
-        created_at: r.created_at,
+        description: i.description,
+        category: i.category,
+        condition: i.condition,
+        status: i.status,
+        final_price: i.final_price,
+        buyer_email: i.buyer_email,
+        created_at: i.createdAt,
       });
     });
 
-    const repairRes = await pool.query(
-      `SELECT id, description, category, condition, status, worker_notes, updated_at, created_at
-       FROM repair_requests WHERE user_id = $1`,
-      [uid]
-    );
-    repairRes.rows.forEach((r) => {
+  memory.repairRequests
+    .filter((r) => String(r.userId) === uid)
+    .forEach((r) => {
       history.push({
         id: `repair-${r.id}`,
         type: 'REPAIR',
@@ -770,18 +864,15 @@ export async function getUserHistory(userId) {
         category: r.category,
         condition: r.condition,
         status: r.status,
-        worker_notes: r.worker_notes,
-        estimated_completion: r.updated_at,
-        created_at: r.created_at,
+        worker_notes: r.workerNotes || null,
+        estimated_completion: r.updatedAt,
+        created_at: r.createdAt,
       });
     });
 
-    const recycleRes = await pool.query(
-      `SELECT id, description, category, condition, status, recycling_center, environmental_impact, created_at
-       FROM recycle_requests WHERE user_id = $1`,
-      [uid]
-    );
-    recycleRes.rows.forEach((r) => {
+  memory.recycleRequests
+    .filter((r) => String(r.userId) === uid)
+    .forEach((r) => {
       history.push({
         id: `recycle-${r.id}`,
         type: 'RECYCLE',
@@ -789,61 +880,11 @@ export async function getUserHistory(userId) {
         category: r.category,
         condition: r.condition,
         status: r.status,
-        recycling_center: r.recycling_center,
-        environmental_impact: r.environmental_impact,
-        created_at: r.created_at,
+        recycling_center: r.recyclingCenter || null,
+        environmental_impact: r.environmentalImpact || null,
+        created_at: r.createdAt,
       });
     });
-  } else {
-    // In-memory history aggregation
-    memory.items
-      .filter((i) => String(i.userId) === uid && i.status === 'SOLD')
-      .forEach((i) => {
-        history.push({
-          id: `resale-${i.id}`,
-          type: 'RESALE',
-          description: i.description,
-          category: i.category,
-          condition: i.condition,
-          status: i.status,
-          final_price: i.final_price,
-          buyer_email: i.buyer_email,
-          created_at: i.createdAt,
-        });
-      });
-
-    memory.repairRequests
-      .filter((r) => String(r.userId) === uid)
-      .forEach((r) => {
-        history.push({
-          id: `repair-${r.id}`,
-          type: 'REPAIR',
-          description: r.description,
-          category: r.category,
-          condition: r.condition,
-          status: r.status,
-          worker_notes: r.workerNotes || null,
-          estimated_completion: r.updatedAt,
-          created_at: r.createdAt,
-        });
-      });
-
-    memory.recycleRequests
-      .filter((r) => String(r.userId) === uid)
-      .forEach((r) => {
-        history.push({
-          id: `recycle-${r.id}`,
-          type: 'RECYCLE',
-          description: r.description,
-          category: r.category,
-          condition: r.condition,
-          status: r.status,
-          recycling_center: r.recyclingCenter || null,
-          environmental_impact: r.environmentalImpact || null,
-          created_at: r.createdAt,
-        });
-      });
-  }
 
   history.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   return history;

@@ -9,23 +9,30 @@ This guide covers two deployment strategies for Reloop Plus:
 ## Option A: Free Cloud Deployment (Recommended)
 
 ### Architecture
-- **Frontend:** [Vercel](https://vercel.com/) (Fast static global CDN, automated CI/CD from GitHub)
+- **Database:** [MongoDB Atlas](https://www.mongodb.com/cloud/atlas) (Free Tier M0 cluster)
 - **Backend:** [Render](https://render.com/) or [Railway](https://railway.app/) (Free/low-cost Node.js web service)
-- **Database:** [Neon.tech](https://neon.tech/) or [Supabase](https://supabase.com/) (Serverless free-tier PostgreSQL)
-- **AI Engine:** [Google Gemini 1.5 Flash](https://aistudio.google.com/) (Zero RAM cost, fast structured JSON responses)
+- **Frontend:** [Vercel](https://vercel.com/) (Fast static global CDN, automated CI/CD from GitHub)
+- **AI Engine:** [Google Gemini 1.5 Flash](https://aistudio.google.com/) (Free structured JSON responses)
 
 ---
 
-### Step 1: Set Up Cloud PostgreSQL (Neon or Supabase)
-1. Go to [Neon.tech](https://neon.tech/) or [Supabase](https://supabase.com/) and create a free project.
-2. Copy your PostgreSQL connection string (`postgresql://username:password@ep-xyz.neon.tech/reloop_db?sslmode=require`).
-3. *(Optional)* Open the SQL Editor in your database console and run the contents of [`backend/db/init.sql`](backend/db/init.sql). 
-   *(Note: If you skip this, Reloop Plus automatically checks and initializes all tables on first startup!)*
+### Step 1: Set Up MongoDB Atlas (Free M0 Cluster)
+1. Go to [MongoDB Atlas](https://www.mongodb.com/cloud/atlas) and sign up / log in.
+2. Create a **Free Shared Cluster (M0)**.
+3. Under **Security > Database Access**, add a database user (e.g. username `reloop_admin` and secure password).
+4. Under **Security > Network Access**, click **Add IP Address** and choose **Allow Access From Anywhere** (`0.0.0.0/0`) so Render and your local machine can connect.
+5. In **Database Deployments**, click **Connect > Drivers > Node.js**.
+6. Copy your connection string:
+   ```text
+   mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/reloop?retryWrites=true&w=majority
+   ```
+   *(Replace `<username>` and `<password>` with your database user credentials!)*
+   *(Note: The server will automatically seed initial demo data and accounts like `user@example.com` and `worker@example.com` upon first connection).*
 
 ---
 
 ### Step 2: Deploy the Backend to Render or Railway
-1. Push your repository to your GitHub account (`https://github.com/gurusai95155/reloop-`).
+1. Push your repository to your GitHub account (`https://github.com/gurusai95155/reloop-plus`).
 2. Log into [Render.com](https://render.com/) and click **New + > Web Service**.
 3. Connect your GitHub repository.
 4. Set the following build settings:
@@ -34,28 +41,31 @@ This guide covers two deployment strategies for Reloop Plus:
    - **Start Command:** `npm start`
 5. In **Environment Variables**, add:
    - `PORT`: `3001`
-   - `DATABASE_URL`: *(Your connection string from Step 1)*
-   - `DATABASE_SSL`: `true`
+   - `MONGODB_URI`: *(Your connection string from Step 1)*
+   - `CLIENT_URL`: `https://your-frontend.vercel.app` *(update once frontend is deployed)*
    - `AI_PROVIDER`: `gemini`
    - `GEMINI_API_KEY`: *(Get your free key at [aistudio.google.com](https://aistudio.google.com/))*
-   - `CLIENT_URL`: `https://your-frontend.vercel.app` *(update once frontend is deployed)*
-6. Deploy! Render will give you a public URL like `https://reloop-backend.onrender.com`.
-7. Verify health at `https://reloop-backend.onrender.com/api/health`.
+6. Click **Deploy Web Service**! Render will give you a public URL like:
+   `https://reloop-backend.onrender.com`
+7. Verify backend health by opening `https://reloop-backend.onrender.com/api/health` in your browser. It will return:
+   ```json
+   { "ok": true, "storage": "mongodb", "ai": "gemini" }
+   ```
 
 ---
 
 ### Step 3: Deploy the Frontend to Vercel
 1. Log into [Vercel.com](https://vercel.com/) and click **Add New > Project**.
-2. Select your `reloop-` repository.
+2. Select your `reloop-plus` repository.
 3. Configure the project:
    - **Framework Preset:** `Vite`
    - **Root Directory:** `frontend`
    - **Build Command:** `npm run build`
    - **Output Directory:** `dist`
 4. In **Environment Variables**, add:
-   - `VITE_API_URL`: `https://reloop-backend.onrender.com/api` *(Your Render backend URL followed by `/api`)*
-5. Click **Deploy**. Vercel will deploy your frontend with automatic SSL and SPA routing configured via `frontend/vercel.json`.
-6. Copy your frontend Vercel URL and add it to `CLIENT_URL` in your Render backend settings so CORS allows requests.
+   - `VITE_API_URL`: `https://reloop-backend.onrender.com/api` *(Your Render backend URL with `/api` at the end)*
+5. Click **Deploy**! Vercel will produce your live public link (e.g., `https://reloop-plus.vercel.app`).
+6. Copy your frontend Vercel URL and update `CLIENT_URL` in your Render backend settings so CORS allows requests.
 
 ---
 

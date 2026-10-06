@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { initDb } from './db/store.js';
+import { initDb, isDbConnected } from './db/store.js';
 import auth from './routes/auth.js';
 import aiDecision from './routes/aiDecision.js';
 import resale from './routes/resale.js';
@@ -12,13 +12,15 @@ import user from './routes/user.js';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-const allowedOrigins = process.env.CLIENT_URL ? process.env.CLIENT_URL.split(',').map((s) => s.trim()) : '*';
 app.use(
   cors({
-    origin: allowedOrigins === '*' ? '*' : allowedOrigins,
+    origin: true, // Dynamically reflects request origin so browser credential/preflight checks succeed
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
+app.options('*', cors());
 app.use(express.json());
 
 app.use('/api/auth', auth);
@@ -31,12 +33,12 @@ app.use('/api/user', user);
 app.get('/api/health', (req, res) => {
   res.json({
     ok: true,
-    storage: process.env.DATABASE_URL ? 'postgresql' : 'in-memory',
+    storage: isDbConnected() ? 'mongodb' : (process.env.MONGODB_URI ? 'connecting-mongodb' : 'in-memory'),
     ai: process.env.GEMINI_API_KEY ? 'gemini' : (process.env.OLLAMA_URL ? 'ollama' : 'heuristic'),
   });
 });
 
-// Initialize database schema if PostgreSQL is configured
+// Initialize MongoDB database connection
 initDb().catch((err) => console.error('Database initialization error:', err));
 
 app.listen(PORT, () => {
