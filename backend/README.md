@@ -1,6 +1,6 @@
 # Reloop Plus – Backend
 
-Node.js + Express, in-memory storage only.
+Node.js + Express + MongoDB (Mongoose), with automatic fallback to in-memory store.
 
 ## Setup
 
